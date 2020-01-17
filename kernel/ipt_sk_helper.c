@@ -1,5 +1,5 @@
 /*
- *	ipt_sk - Netfilter helper module to match cgroup/owner
+ *	ipt_sk_helper - Netfilter helper module to match cgroup
  *
  *	(C) 2020 Vitaly Lavrov <vel21ripn@gnail.com>
  *
