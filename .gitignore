@@ -3,6 +3,8 @@
 *.o.cmd
 *.ko.cmd
 *.mod.c
+*.mod
+*.mod.cmd
 .cache.mk
 .tmp_versions
 Module.symvers
