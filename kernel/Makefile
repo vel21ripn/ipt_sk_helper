@@ -1,8 +1,7 @@
-ccflags-m += -I.
 
-
-MODULES_DIR := /lib/modules/$(shell uname -r)
-KERNEL_DIR := ${MODULES_DIR}/build
+ifndef $(KERNEL_DIR)
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+endif
 
 obj-m := ipt_sk_helper.o
 
