@@ -32,6 +32,10 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vitaly Lavrov <vel21ripn@gnail.com>");
 MODULE_DESCRIPTION("Xtables: Netfilter helper module");
 
+static int early_ip_demux = 0;
+module_param(early_ip_demux, int, 0644);
+MODULE_PARM_DESC(early_ip_demux, "early_ip_demux on/off");
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
 
 /*
@@ -186,9 +190,7 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 	return nf_socket_get_sock_v4(net, data_skb, doff, protocol, saddr,
 				     daddr, sport, dport, indev);
 }
-#define SYSCTL_IP_EARLY_DEMUX sysctl_ip_early_demux
 #else
-#define SYSCTL_IP_EARLY_DEMUX net->ipv4.sysctl_ip_early_demux
 #endif
 
 static unsigned int sk_early_on(void *priv,
@@ -198,7 +200,7 @@ static unsigned int sk_early_on(void *priv,
 	struct net *net = state->net;
 	const struct iphdr *iph = ip_hdr(skb);
 
-	if( skb->sk || SYSCTL_IP_EARLY_DEMUX < 2 ||
+	if( skb->sk || !early_ip_demux ||
 	    ip_is_fragment(iph)) 
 		return NF_ACCEPT;
 	skb->sk = nf_sk_lookup_slow_v4(net, skb, state->in);
