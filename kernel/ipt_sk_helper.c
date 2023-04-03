@@ -16,9 +16,11 @@
 #endif
 
 #include <linux/skbuff.h>
-
+#include <linux/proc_fs.h>
 
 #include <net/net_namespace.h>
+#include <net/netns/generic.h>
+
 #include <net/ip.h>
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
@@ -32,12 +34,27 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vitaly Lavrov <vel21ripn@gnail.com>");
 MODULE_DESCRIPTION("Xtables: Netfilter helper module");
 
+/*
 static int early_ip_demux = 0;
 module_param(early_ip_demux, int, 0644);
 MODULE_PARM_DESC(early_ip_demux, "early_ip_demux on/off");
+*/
+
+static const char *name_state = "early_demux_ip4";
+
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+#define pde_data(inode) PDE_DATA(inode)
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+#define ACCESS_OK(a,b,c) access_ok(b,c)
+#else
+#define ACCESS_OK(a,b,c) access_ok(a,b,c)
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
-
+/// {{{{
 /*
  * copy from net/ipv4/netfilter/nf_socket.c
  */
@@ -191,16 +208,97 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 				     daddr, sport, dport, indev);
 }
 #else
+// }}}}
 #endif
+
+struct early_net {
+	int	state;
+    struct proc_dir_entry   *pe;
+};
+
+#if  LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
+#define PROC_OPS(s,o,r,w,l,d) static const struct file_operations s = { \
+        .open    = o , \
+        .read    = r , \
+        .write   = w , \
+        .llseek  = l , \
+        .release = d \
+}
+#else
+  #if  LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+    #define PROC_OPS(s,o,r,w,l,d) static const struct proc_ops s = { \
+        .proc_open    = o , \
+        .proc_read    = r , \
+        .proc_write   = w , \
+        .proc_lseek   = l , \
+        .proc_release = d  \
+    }
+  #else
+    #define PROC_OPS(s,o,r,w,l,d) static const struct proc_ops s = { \
+        .proc_open    = o , \
+        .proc_read    = r , \
+        .proc_write   = w , \
+        .proc_release = d \
+    }
+  #endif
+#endif
+
+static int nstate_proc_open(struct inode *inode, struct file *file)
+{
+        return 0;
+}
+
+static int nstate_proc_close(struct inode *inode, struct file *file)
+{
+        return 0;
+}
+
+static ssize_t nstate_proc_read(struct file *file, char __user *buffer,
+                              size_t count, loff_t *ppos)
+{
+    struct early_net *n = pde_data(file_inode(file));
+    char data[4];
+	
+	if (*ppos > 0) return 0;
+
+    data[0] = n->state ? '1':'0';
+    data[1] = '\n';
+	if (!(ACCESS_OK(VERIFY_WRITE, buffer, 2) &&
+               !__copy_to_user(buffer, data, 2))) return -EFAULT;
+    (*ppos) += 2;
+	return 2;
+}
+static ssize_t nstate_proc_write(struct file *file, const char __user *buffer,
+                     size_t length, loff_t *loff)
+{
+    struct early_net *n = pde_data(file_inode(file));
+    char data[4];
+    int l;
+    memset(data,0,sizeof(data));
+    l = min(length,sizeof(data)-1);
+    if (!(ACCESS_OK(VERIFY_READ, buffer, l) &&
+                !__copy_from_user(&data[0], buffer, l))) return -EFAULT;
+    n->state = data[0] == '1' ? 1:0;
+    return length;
+}
+
+PROC_OPS(nstate_proc_fops, nstate_proc_open,nstate_proc_read,nstate_proc_write,noop_llseek,nstate_proc_close);
+
+static int early_net_id=0;
+static inline struct early_net *early_pernet(struct net *net)
+{
+	return net_generic(net, early_net_id);
+}
 
 static unsigned int sk_early_on(void *priv,
 					 struct sk_buff *skb,
 					 const struct nf_hook_state *state)
 {
 	struct net *net = state->net;
+    struct early_net  *n = early_pernet(net);
 	const struct iphdr *iph = ip_hdr(skb);
 
-	if( skb->sk || !early_ip_demux ||
+	if( skb->sk || !n->state ||
 	    ip_is_fragment(iph)) 
 		return NF_ACCEPT;
 	skb->sk = nf_sk_lookup_slow_v4(net, skb, state->in);
@@ -237,12 +335,21 @@ static struct nf_hook_ops nf_sk_ipv4_ops[] = {
 };
 
 static int __net_init sk_net_init(struct net *net) {
+
+    struct early_net  *n = early_pernet(net);
+    n->state = 0;
+    n->pe = proc_create_data(name_state, S_IRUGO | S_IWUSR,
+                                         net->proc_net, &nstate_proc_fops, n);
+    if(!n->pe) return -ENOMEM;
+
 	return nf_register_net_hooks(net, nf_sk_ipv4_ops,
 		    ARRAY_SIZE(nf_sk_ipv4_ops));
 
 }
 static void __net_exit sk_net_exit(struct net *net) {
 
+    struct early_net  *n = early_pernet(net);
+    if(n->pe) proc_remove(n->pe);
 	nf_unregister_net_hooks(net, nf_sk_ipv4_ops,
 			      ARRAY_SIZE(nf_sk_ipv4_ops));
 
@@ -251,6 +358,8 @@ static void __net_exit sk_net_exit(struct net *net) {
 static struct pernet_operations sk_net_ops = {
 	.init   = sk_net_init,
 	.exit   = sk_net_exit,
+	.id     = &early_net_id,
+	.size   = sizeof(struct early_net),
 };
 
 
@@ -266,3 +375,5 @@ static void __exit sk_mt_exit(void)
 
 module_init(sk_mt_init);
 module_exit(sk_mt_exit);
+
+/* vim: set ts=4 sw=4 et foldmarker={{{{,}}}} foldmethod=marker : */
